@@ -1,0 +1,8 @@
+{
+  "properties": [
+    {
+      "name": "application.formatted-version",
+      "type": "java.lang.String",
+      "description": "Description for application.formatted-version."
+  }
+] }
