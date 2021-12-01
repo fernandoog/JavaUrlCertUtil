@@ -1,11 +1,6 @@
 package es.fernandoog.cert;
 
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLSocket;
-import javax.net.ssl.SSLSocketFactory;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.TrustManagerFactory;
-import javax.net.ssl.X509TrustManager;
+import javax.net.ssl.*;
 
 import java.io.*;
 import java.security.*;
@@ -28,14 +23,13 @@ public class InstallCertsFromUrl {
     private static final String SECURITY = "security";
     private static final String PATHNAME = JDK + SEP
             + LIB + SEP + SECURITY;
-    private static final String KEYSTORE = UUID.randomUUID().toString();
-    private static final String[] UNIXCOMAND = {"bash", "-c", "keytool -genkeypair -keystore " + KEYSTORE + "  -dname \"cn=Unknown, ou=Unknown, o=Unknown, c=Unknown\" -storepass " + KEYSTORE + " -keypass " + KEYSTORE + "\""};
-    private static final String[] WINCOMAND = {"cmd.exe", "/c", "keytool -genkeypair -keystore " + KEYSTORE + "  -dname \"cn=Unknown, ou=Unknown, o=Unknown, c=Unknown\" -storepass " + KEYSTORE + " -keypass " + KEYSTORE + "\""};
+    private static final String KEYSTORE = "cacerts";
+    private static final String DEFAULTPASSWORD = "changeit";
     private static final String TLS = "TLS";
     private static final String SHA_1 = "SHA1";
     private static final String MD_5 = "MD5";
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
 
         SpringApplication.run(InstallCertsFromUrl.class, args);
 
@@ -43,100 +37,114 @@ public class InstallCertsFromUrl {
 
     }
 
-    private static void process(String[] args) {
+    private static void process(String[] args) throws Exception{
 
         String host;
         int port;
+        char[] passphrase;
         if ((args.length == 1) || (args.length == 2)) {
             String[] c = args[0].split(":");
             host = c[0];
             port = (c.length == 1) ? 443 : Integer.parseInt(c[1]);
+            String p = (args.length == 1) ? "passphrase" : args[1];
+            passphrase = p.toCharArray();
         } else {
-            log.error("Usage: java -jar InstallCertsFromUrl <host>[:port]");
+            System.out.println("Usage: java InstallCert <host>[:port] [passphrase]");
             return;
         }
 
-        log.info("JAVA_HOME: {}", JDK);
-
-        ProcessBuilder processBuilder;
-
-        if (System.getProperty("os.name").toLowerCase().contains("win")) {
-            processBuilder = new ProcessBuilder(WINCOMAND);
-        } else {
-            processBuilder = new ProcessBuilder(UNIXCOMAND);
+        File file = new File("jssecacerts");
+        if (file.isFile() == false) {
+            char SEP = File.separatorChar;
+            File dir = new File(System.getProperty("java.home") + SEP
+                    + "lib" + SEP + "security");
+            file = new File(dir, "jssecacerts");
+            if (file.isFile() == false) {
+                file = new File(dir, "cacerts");
+            }
         }
+        System.out.println("Loading KeyStore " + file + "...");
+        InputStream in = new FileInputStream(file);
+        KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
+        ks.load(in, passphrase);
+        in.close();
 
+        SSLContext context = SSLContext.getInstance("TLS");
+        TrustManagerFactory tmf =
+                TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        tmf.init(ks);
+        X509TrustManager defaultTrustManager = (X509TrustManager) tmf.getTrustManagers()[0];
+        SavingTrustManager tm = new SavingTrustManager(defaultTrustManager);
+        context.init(null, new TrustManager[]{tm}, null);
+        SSLSocketFactory factory = context.getSocketFactory();
 
-        processBuilder.directory(new File(PATHNAME));
-        log.info("Process: {}", processBuilder.command());
-
+        System.out.println("Opening connection to " + host + ":" + port + "...");
+        SSLSocket socket = (SSLSocket) factory.createSocket(host, port);
+        socket.setSoTimeout(10000);
         try {
-            Process process = processBuilder.start();
-
-            BufferedReader reader =
-                    new BufferedReader(new InputStreamReader(process.getInputStream()));
-
-            String line;
-            while ((line = reader.readLine()) != null) {
-                log.info("Process: {}", line);
-            }
-            int exitCode = process.waitFor();
-            log.info("Exit code: {}", exitCode);
-
-        } catch (IOException | InterruptedException e) {
-            log.error("Error: {}", e.getLocalizedMessage());
-            Thread.currentThread().interrupt();
+            System.out.println("Starting SSL handshake...");
+            socket.startHandshake();
+            socket.close();
+            System.out.println();
+            System.out.println("No errors, certificate is already trusted");
+        } catch (SSLException e) {
+            System.out.println();
+            e.printStackTrace(System.out);
+        } finally {
+            socket.close();
         }
 
-        try {
-            KeyStore ks;
-            try (InputStream in = new FileInputStream(new File(PATHNAME, KEYSTORE))) {
-                ks = KeyStore.getInstance(KeyStore.getDefaultType());
-                ks.load(in, KEYSTORE.toCharArray());
-            }
-
-            SSLContext context = SSLContext.getInstance(TLS);
-            TrustManagerFactory tmf =
-                    TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-            tmf.init(ks);
-            X509TrustManager defaultTrustManager = (X509TrustManager) tmf.getTrustManagers()[0];
-            SavingTrustManager tm = new SavingTrustManager(defaultTrustManager);
-            context.init(null, new TrustManager[]{tm}, null);
-            SSLSocketFactory factory = context.getSocketFactory();
-            try (SSLSocket socket = (SSLSocket) factory.createSocket(host, port)) {
-                socket.setSoTimeout(10000);
-                socket.startHandshake();
-            }
-
-            X509Certificate[] chain = tm.chain;
-            if (chain == null) {
-                log.error("Could not obtain server certificate chain");
-                return;
-            }
-            log.error("Chain length: {}", tm.chain.length);
-
-            MessageDigest sha1 = MessageDigest.getInstance(SHA_1);
-            MessageDigest md5 = MessageDigest.getInstance(MD_5);
-
-            for (int i = 0; i < chain.length; i++) {
-                X509Certificate cert = chain[i];
-                sha1.update(cert.getEncoded());
-                md5.update(cert.getEncoded());
-                String alias = host + "-" + (i + 1);
-                ks.setCertificateEntry(alias, cert);
-                try (OutputStream out = new FileOutputStream(new File(PATHNAME, KEYSTORE))) {
-                    ks.store(out, KEYSTORE.toCharArray());
-                    log.info("Certificate added: {}", alias);
-                }
-            }
-
-            log.info("Java keystore create: {}", KEYSTORE);
-            log.error("Keystore location: {}", PATHNAME);
-
-        } catch (NoSuchAlgorithmException | KeyStoreException | CertificateException | KeyManagementException | IOException e) {
-            log.error("Error: {}", e.getLocalizedMessage());
-            log.error("Keystore location: {}", PATHNAME);
+        X509Certificate[] chain = tm.chain;
+        if (chain == null) {
+            System.out.println("Could not obtain server certificate chain");
+            return;
         }
+
+        System.out.println();
+        System.out.println("Server sent " + chain.length + " certificate(s):");
+        System.out.println();
+        MessageDigest sha1 = MessageDigest.getInstance("SHA1");
+        MessageDigest md5 = MessageDigest.getInstance("MD5");
+        for (int i = 0; i < chain.length; i++) {
+            X509Certificate cert = chain[i];
+            System.out.println
+                    (" " + (i + 1) + " Subject " + cert.getSubjectDN());
+            System.out.println("   Issuer  " + cert.getIssuerDN());
+            sha1.update(cert.getEncoded());
+            System.out.println("   sha1    " + toHexString(sha1.digest()));
+            md5.update(cert.getEncoded());
+            System.out.println("   md5     " + toHexString(md5.digest()));
+            System.out.println();
+            String alias = host + "-" + (i + 1);
+            ks.setCertificateEntry(alias, cert);
+
+            OutputStream out = new FileOutputStream("jssecacerts");
+            ks.store(out, passphrase);
+            out.close();
+
+            System.out.println();
+            System.out.println(cert);
+            System.out.println();
+            System.out.println
+                    ("Added certificate to keystore 'jssecacerts' using alias '"
+                            + alias + "'");
+
+        }
+
+
+    }
+
+    private static final char[] HEXDIGITS = "0123456789abcdef".toCharArray();
+
+    private static String toHexString(byte[] bytes) {
+        StringBuilder sb = new StringBuilder(bytes.length * 3);
+        for (int b : bytes) {
+            b &= 0xff;
+            sb.append(HEXDIGITS[b >> 4]);
+            sb.append(HEXDIGITS[b & 15]);
+            sb.append(' ');
+        }
+        return sb.toString();
     }
 
     private static class SavingTrustManager implements X509TrustManager {
