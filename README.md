@@ -8,7 +8,23 @@ usage:
 `
 or
 
-`java -jar java-https-cert-import-0.0.1-SNAPSHOT.jar google.es`
+`java -jar java-https-cert-import-1.0.0.jar google.es`
+
+if you have problems whit the KeyStore password:
+
+`  mvn spring-boot:run -Dspring-boot.run.arguments="google.es" password
+`
+or
+
+`java -jar java-https-cert-import-1.0.0.jar google.es` password
+
+
+
+
+
+
+
+
 
 
 

@@ -115,7 +115,6 @@ public class InstallCertsFromUrl {
                 file = new File(dir, CACERTS);
             }
         }
-        log.info("Loading KeyStore {}", file.getAbsoluteFile());
         return file;
     }
 
